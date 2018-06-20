@@ -7,7 +7,6 @@ import { ChainNetwork } from '../types/ChainNetwork';
 import { TransformableModel } from '../types/TransformableModel';
 import { LoggifyObject } from '../decorators/Loggify';
 import { CoreBlock } from '../types/namespaces/ChainAdapter';
-// import { partition } from '../utils/partition';
 
 export interface IBlock {
   chain: string;
@@ -89,11 +88,14 @@ export function batch<T, M>(items: T[], f: (items: T[]) => Promise<M>, n: number
 async function time<T>(store: {
   [key: string]: number;
 }, title: string, f: () => PromiseLike<T>): Promise<T> {
-  const start = Date.now();
-  const result = await f();
-  const end = Date.now();
-  store[title] = end - start;
-  return result;
+  if (process.env.TIME_ADD_BLOCKS) {
+    const start = Date.now();
+    const result = await f();
+    const end = Date.now();
+    store[title] = end - start;
+    return result;
+  }
+  return await f();
 };
 
 BlockSchema.statics.addBlocks = async (blocks: CoreBlock[]) => {
@@ -242,26 +244,24 @@ BlockSchema.statics.getPoolInfo = function(coinbase: string) {
 };
 
 // TODO: create a memo for local tip
-BlockSchema.statics.getLocalTip = async ({ // chain, network
-}: ChainNetwork) => {
+BlockSchema.statics.getLocalTip = async ({ chain, network }: ChainNetwork) => {
   const bestBlock = await BlockModel.findOne({
     // TODO: BlockModel.getLocalTip uses BlockModel.processed key
     processed: true,
-    // chain,
-    // network
+    chain,
+    network,
   }).sort({ height: -1 });
   return bestBlock || { height: 0 };
 };
 
 // TODO: create a ring buffer for locator hashes
-BlockSchema.statics.getLocatorHashes = async (// params: ChainNetwork
-) => {
-  // const { chain, network } = params;
+BlockSchema.statics.getLocatorHashes = async (params: ChainNetwork) => {
+  const { chain, network } = params;
   const locatorBlocks = await BlockModel.find({
     // TODO: BlockModel.locatorBlocks uses BlockModel.processed key
     processed: true,
-    // chain,
-    // network
+    chain,
+    network,
   })
     .sort({ height: -1 })
     .limit(30)
@@ -287,44 +287,37 @@ BlockSchema.statics.handleReorg = async (prevHash: string, { chain, network }: C
   });
 
   await BlockModel.remove({
-    // chain,
-    // network,
+    chain,
+    network,
     height: {
       $gte: localTip.height
     }
   });
-  // TODO: handleReorg uses TransactionModel.blockHeight index
   await TransactionModel.remove({
-    // chain,
-    // network,
+    chain,
+    network,
     blockHeight: {
       $gte: localTip.height
     }
   });
   await CoinModel.remove({
-    // chain,
-    // network,
-    // TODO: Reorg uses CoinModel.mintHeight index
+    chain,
+    network,
     mintHeight: {
       $gte: localTip.height
     }
   });
-  await CoinModel.update(
-    {
-      // chain,
-      // network,
-      // TODO: Reorg uses CoinModel.spentHeight index
-      spentHeight: {
-        $gte: localTip.height
-      }
-    },
-    {
-      $set: { spentTxid: null, spentHeight: -1 }
-    },
-    {
-      multi: true
+  await CoinModel.update({
+    chain,
+    network,
+    spentHeight: {
+      $gte: localTip.height
     }
-  );
+  }, {
+    $set: { spentTxid: null, spentHeight: -1 }
+  }, {
+    multi: true
+  });
 
   logger.debug('Removed data from above blockHeight: ', localTip.height);
 };

@@ -24,6 +24,9 @@ export interface ITransaction {
   fee: number;
   size: number;
   locktime: number;
+  outputs: {
+    address: string;
+  }[];
   wallets: ObjectID[];
 }
 export type TransactionQuery = {[key in keyof ITransaction]?: any}&
@@ -41,8 +44,6 @@ export type BatchImportMethodParams = {
   parentChain?: string;
   forkHeight?: number;
 } & ChainNetwork;
-
-type CoinWalletAggregate = ICoinModel & { wallets: ObjectID[] };
 
 export interface ITransactionModel extends ITransactionModelDoc {
   getTransactions: (params: { query: TransactionQuery }) => any;
@@ -74,6 +75,9 @@ const TransactionSchema = new Schema({
   fee: Number,
   size: Number,
   locktime: Number,
+  outputs: [{
+    address: String,
+  }],
   wallets: { type: [Schema.Types.ObjectId] }
 });
 
@@ -124,43 +128,64 @@ TransactionSchema.statics.addTransactions = async (
   }
 ): Promise<any[]> => {
   const { chain, network } = txs[0];
-  const txids = txs.map(tx => tx.hash);
 
-  const mintWallets: CoinWalletAggregate[] = await CoinModel.collection
-    .aggregate([
-      {
-        $match: { mintTxid: { $in: txids } }
-      },
-      { $unwind: "$wallets" },
-      { $group: { _id: "$mintTxid", wallets: { $addToSet: "$wallets" } } }
-    ])
-    .toArray();
+  const mint = txs.map(tx => {
+    return {
+      txid: tx.hash,
+      outputs: tx.outputs.map(out => {
+        return {
+          address: out.address,
+        };
+      }),
+    };
+  });
 
-  const spentWallets: CoinWalletAggregate[] = await CoinModel.collection
-    .aggregate([
-      {
-        $match: { spentTxid: { $in: txids } }
-      },
-      { $unwind: "$wallets" },
-      { $group: { _id: "$spentTxid", wallets: { $addToSet: "$wallets" } } }
-    ])
-    .toArray();
+  const spent = await TransactionModel.find({
+    txid: {
+      $in: [].concat.apply([], txs.map(tx => {
+        return tx.inputs.map(input => input.prevTxId);
+      })),
+    },
+  }, {
+    txid: 1,
+    outputs: 1,
+  });
+
+  const addressToTxs: {
+    [address: string]: Set<string>;
+  } = mint.concat(spent).reduce((memo, tx) => {
+    for (const output of tx.outputs) {
+      if (!memo[output.address]) {
+        memo[output.address] = new Set();
+      }
+      memo[output.address].add(tx.txid);
+    }
+    return memo;
+  }, {});
+
+  const wallets = await WalletAddressModel.find({
+    address: {
+      $in: Object.keys(addressToTxs),
+    },
+  }, {
+    wallet: 1,
+    address: 1,
+  });
+
+  const txToWallet: {
+    [txid: string]: Set<ObjectId>;
+  } = wallets.reduce((memo, wallet) => {
+    const txs = addressToTxs[wallet.address];
+    for (const txid of txs) {
+      if (!memo[txid]) {
+        memo[txid] = new Set();
+      }
+      memo[txid].add(wallet.wallet);
+    }
+    return memo;
+  }, {});
 
   return txs.map(tx => {
-    const wallets: ObjectId[] = [];
-    for (const wallet of mintWallets
-         .concat(spentWallets)
-         .filter(wallet => wallet._id === tx.hash)) {
-
-      for (const walletMatch of wallet.wallets) {
-        if (!wallets.find(wallet => {
-          return wallet.toHexString() === walletMatch.toHexString()
-        })) {
-          wallets.push(walletMatch);
-        }
-      }
-    }
-
     return {
       insertOne: {
         document: {
@@ -174,7 +199,8 @@ TransactionSchema.statics.addTransactions = async (
           coinbase: tx.coinbase,
           size: tx.size,
           locktime: tx.nLockTime,
-          wallets
+          outputs: tx.outputs.map(out => out.address),
+          wallets: Array.from(txToWallet[tx.hash] || []),
         },
       },
     };
@@ -211,10 +237,7 @@ TransactionSchema.statics.getMintOps = async (
       mintOps.push({
         updateOne: {
           filter: {
-            mintTxid: tx.hash,
-            mintIndex: index,
-            chain: info.chain,
-            network: info.network,
+            id: `${tx.hash}.${index}`,
           },
           update: {
             $set: {
@@ -245,8 +268,8 @@ TransactionSchema.statics.getMintOps = async (
   const wallets = await WalletAddressModel.collection.find({
     address: { $in: mintOpsAddresses },
     // TODO: update wallets db
-    // chain: info.chain,
-    // network: info.network
+    chain: info.chain,
+    network: info.network
   }, {
     batchSize: 10
   }).toArray();
@@ -277,10 +300,7 @@ TransactionSchema.statics.getSpendOps = (
       const updateQuery: any = {
         updateOne: {
           filter: {
-            mintTxid: input.prevTxId,
-            mintIndex: input.outputIndex,
-            chain: info.chain,
-            network: info.network,
+            id: `${input.prevTxId}.${input.outputIndex}`,
           },
           update: {
             $set: {
