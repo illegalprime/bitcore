@@ -45,6 +45,10 @@ export class InternalStateProvider implements CSP.IChainStateService {
     Storage.apiStreamingFind(CoinModel, query, { limit }, stream);
   }
 
+  async countAddressUtxos(params: CSP.CountAddressUtxosParams): Promise<number> {
+    return await CoinModel.collection.count({ params });
+  }
+
   async streamAddressTransactions(params: CSP.StreamAddressUtxosParams) {
     const { limit = 10, stream } = params;
     const query = this.getAddressQuery(params);

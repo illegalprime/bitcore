@@ -44,6 +44,14 @@ router.get('/:address/balance', async function(req, res) {
   }
 });
 
+router.get('/:address/count', async (req, res) => {
+  const { address, chain, network } = req.params;
+  const count = await InternalState.countAddressUtxos({
+    chain, network, address
+  });
+  return res.send({ count });
+});
+
 module.exports = {
   router: router,
   path: '/address'

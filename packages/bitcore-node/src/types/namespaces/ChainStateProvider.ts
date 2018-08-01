@@ -24,6 +24,9 @@ export declare namespace CSP {
   export type GetBalanceForAddressParams = ChainNetwork & {
     address: string;
   };
+  export type CountAddressUtxosParams = ChainNetwork & {
+    address: string;
+  };
   export type GetBalanceForWalletParams = ChainNetwork & {
     walletId: string;
   };
